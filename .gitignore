@@ -1,0 +1,10 @@
+# Ignore model weights (they are too big for Git)
+*.pth
+*.pt
+__pycache__/
+temp_uploads/
+app/models/weights/
+app/models/CodeFormer/
+gfpgan/weights/
+venv/
+.env

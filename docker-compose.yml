@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  enhancer-api:
+    build: .
+    container_name: magazine-enhancer
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - GCS_BUCKET_ORIGINAL=my-client-bucket-original
+      - GCS_BUCKET_ENHANCED=my-client-bucket-enhanced
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
+    volumes:
+      # Map the credentials file from host to container
+      - ./credentials.json:/app/credentials.json
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
