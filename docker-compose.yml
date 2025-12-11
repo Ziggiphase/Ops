@@ -8,8 +8,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - GCS_BUCKET_ORIGINAL=my-client-bucket-original
-      - GCS_BUCKET_ENHANCED=my-client-bucket-enhanced
+      # Use the bucket name the client provided
+      - GCS_BUCKET_ORIGINAL=photo_enhance
+      - GCS_BUCKET_ENHANCED=photo_enhance
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
     volumes:
       # Map the credentials file from host to container
