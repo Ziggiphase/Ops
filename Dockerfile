@@ -15,31 +15,33 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# 1. Setup CodeFormer (Clone the repo for scripts/weights)
+# 1. Setup CodeFormer
 RUN git clone https://github.com/sczhou/CodeFormer.git CodeFormer
 
-# 2. Install Dependencies (But we will use our LOCAL basicsr)
+# 2. Install Dependencies
+# --- FIX STARTS HERE ---
+# We must copy the requirements file BEFORE we try to install from it
+COPY requirements.txt . 
+# --- FIX ENDS HERE ---
+
 RUN pip3 install --no-cache-dir -r CodeFormer/requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
-# Uninstall the broken pypi version if it got installed
 RUN pip3 uninstall -y basicsr
 
 # 3. Copy Your Patched Code
-# This copies your fixed 'basicsr' folder into the container
 COPY basicsr /app/basicsr
 COPY app /app/app
 COPY *.py /app/
 
-# 4. Link the Local Library so Python finds it
+# 4. Link the Local Library
 ENV PYTHONPATH="${PYTHONPATH}:/app:/app/CodeFormer"
 
-# 5. Download Weights (CodeFormer + RealESRGAN)
+# 5. Download Weights
 WORKDIR /app/CodeFormer
 RUN python3 scripts/download_pretrained_models.py CodeFormer
 RUN python3 scripts/download_pretrained_models.py facelib
 
 WORKDIR /app
-# Download Real-ESRGAN weights
 RUN python3 setup_models.py
 
 EXPOSE 8000
