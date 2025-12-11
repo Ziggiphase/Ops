@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from app.config import settings  # <--- ADD THIS IMPORT
 import shutil
 import os
 import uuid
@@ -18,8 +19,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 @router.post("/enhance")
 async def enhance_image(
     file: UploadFile = File(...),
-    bucket_original: str = Form("my-original-bucket"), # Default or from App
-    bucket_enhanced: str = Form("my-enhanced-bucket")
+    bucket_original: str = Form(settings.GCS_BUCKET_ORIGINAL), # Default or from App
+    bucket_enhanced: str = Form(settings.GCS_BUCKET_ENHANCED)
 ):
     try:
         # 1. Save uploaded file locally first
