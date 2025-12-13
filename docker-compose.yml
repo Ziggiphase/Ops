@@ -15,10 +15,10 @@ services:
     volumes:
       # Map the credentials file from host to container
       - ./credentials.json:/app/credentials.json
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    #deploy:
+     # resources:
+       # reservations:
+          #devices:
+           # - driver: nvidia
+             # count: 1
+              #capabilities: [gpu]
