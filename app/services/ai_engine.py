@@ -1,136 +1,101 @@
 import os
-import cv2
 import torch
-import subprocess
-import shutil
+import cv2
+import numpy as np
+from basicsr.utils import img2tensor, tensor2img
+from torchvision.transforms.functional import normalize
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
+from app.config import settings
+
+# CodeFormer Import
+from basicsr.utils.registry import ARCH_REGISTRY
 
 class AIEngine:
     def __init__(self):
-        # 1. Detect Hardware
+        # 1. Explicit Device Control (CPU-First fallback)
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
-            self.fp16 = True
-            print("🚀 AI Engine: GPU Detected! (High Speed Mode)")
+            print("⚡ AI Engine: Running on NVIDIA GPU")
         else:
             self.device = torch.device('cpu')
-            self.fp16 = False
-            print("⚠️ AI Engine: No GPU found. Running in CPU Mode.")
+            print("⚠️ AI Engine: Running on CPU (Explicit Fallback)")
 
-        self.weights_dir = "app/models/weights"
+        # 2. Load CodeFormer (Face Restoration)
+        print("⚡ Loading CodeFormer...")
+        self.codeformer = ARCH_REGISTRY.get('CodeFormer')(dim_embd=512, codebook_size=1024, n_head=8, n_layers=9, connect_list=['32', '64', '128', '256']).to(self.device)
         
-        # SMART PATH DETECTION for CodeFormer
-        # Logic: Check Docker path first -> Check Local path -> Clone if missing
-        docker_path = "/app/CodeFormer"
-        local_path = "CodeFormer"
+        # Load weights
+        ckpt_path = '/installations/CodeFormer/weights/CodeFormer/codeformer.pth'
+        checkpoint = torch.load(ckpt_path, map_location=self.device)['params_ema']
+        self.codeformer.load_state_dict(checkpoint)
+        self.codeformer.eval()
 
-        if os.path.exists(docker_path):
-            self.codeformer_dir = docker_path
-            print(f"✅ Loaded CodeFormer from Docker Path: {self.codeformer_dir}")
-        elif os.path.exists(local_path):
-            self.codeformer_dir = local_path
-            print(f"✅ Loaded CodeFormer from Local Path: {self.codeformer_dir}")
-        else:
-            print("⚠️ CodeFormer not found. Cloning it now (Auto-Setup)...")
-            try:
-                subprocess.run(["git", "clone", "https://github.com/sczhou/CodeFormer.git", "CodeFormer"], check=True)
-                self.codeformer_dir = local_path
-                
-                # Auto-install requirements if we just cloned it
-                print("⚙️ Installing CodeFormer dependencies...")
-                subprocess.run(["pip", "install", "-r", f"{local_path}/requirements.txt"], check=True)
-                subprocess.run(["python", f"{local_path}/basicsr/setup.py", "develop"], check=True)
-            except Exception as e:
-                print(f"❌ Failed to clone CodeFormer: {e}")
-                self.codeformer_dir = None
-
-        # 2. Initialize Background Upscaler (Real-ESRGAN)
-        # This handles the clothes, hair details, and background
+        # 3. Load Real-ESRGAN (Background Upscaling)
+        print("⚡ Loading Real-ESRGAN...")
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
-        
         self.upsampler = RealESRGANer(
             scale=2,
-            model_path=os.path.join(self.weights_dir, "RealESRGAN_x2plus.pth"),
+            model_path='app/models/weights/RealESRGAN_x2plus.pth',
             model=model,
-            tile=0, # 0 = auto-split for large images to prevent RAM crash
+            tile=400,
             tile_pad=10,
             pre_pad=0,
-            half=self.fp16,
+            half=False, # Force FP32 for CPU compatibility
             device=self.device
         )
 
-    def run_codeformer(self, input_path):
-        """
-        Runs CodeFormer as a subprocess command because it is a script, not a library.
-        """
-        if not self.codeformer_dir:
-            print("⚠️ CodeFormer directory missing. Skipping face restoration.")
-            return input_path
+    def enhance(self, input_path: str, output_path: str):
+        # Read Image
+        img = cv2.imread(input_path, cv2.IMREAD_COLOR)
+        
+        # Step 1: Face Restoration (CodeFormer)
+        # w=0.8 means HIGH FIDELITY (Less hallucination, more realism)
+        # w=0.5 is default (more fake details)
+        print("⚡ Running CodeFormer (Fidelity: 0.8)...")
+        face_helper = self._get_face_helper(img)
+        
+        for idx, cropped_face in enumerate(face_helper.cropped_faces):
+            cropped_face_t = img2tensor(cropped_face / 255., bgr2rgb=True, float32=True)
+            normalize(cropped_face_t, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
+            cropped_face_t = cropped_face_t.unsqueeze(0).to(self.device)
 
-        print("⚡ Running CodeFormer Process...")
-        
-        # Define output directory (CodeFormer requires a folder, not a file path)
-        # We use a temp subfolder to avoid filename conflicts
-        temp_output_dir = "temp_uploads/results"
-        os.makedirs(temp_output_dir, exist_ok=True)
-        
-        # Command to run inference_codeformer.py
-        # -w 0.7: Fidelity weight (0.7 is the sweet spot between restoration and reality)
-        # --input_path: The image to fix
-        # --output_path: Where to save it
-        cmd = [
-            "python", "inference_codeformer.py",
-            "-w", "0.7",
-            "--input_path", os.path.abspath(input_path),
-            "--output_path", os.path.abspath(temp_output_dir),
-            "--has_aligned" # Assume unaligned faces (standard photos)
-        ]
-        
-        try:
-            # IMPORTANT: We run inside the CodeFormer directory so it finds its own config files
-            subprocess.run(cmd, cwd=self.codeformer_dir, check=True)
-        except Exception as e:
-            print(f"❌ CodeFormer Failed (likely no GPU or missing repo): {e}")
-            return input_path
+            try:
+                with torch.no_grad():
+                    # 'w' is the Balance Weight. 
+                    # 0.1 = Artificial/Sharp. 
+                    # 0.9 = Real/Blurry. 
+                    # 0.8 is the Editorial Sweet Spot.
+                    output_face = self.codeformer(cropped_face_t, w=0.8, adain=True)[0]
+                    restored_face = tensor2img(output_face, rgb2bgr=True, min_max=(-1, 1))
+                del output_face
+                torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"Face Error: {e}")
+                restored_face = cropped_face # Fallback
 
-        # CodeFormer saves the result in: temp_uploads/results/final_results/<filename>.png
-        filename = os.path.basename(input_path)
-        name_no_ext = os.path.splitext(filename)[0]
-        
-        # CodeFormer forces output to be .png usually
-        result_path = os.path.join(temp_output_dir, "final_results", f"{name_no_ext}.png")
-        
-        # Verify if file exists, otherwise look for .jpg variant or return original
-        if os.path.exists(result_path):
-            return result_path
-        
-        print(f"⚠️ CodeFormer finished but output file not found at {result_path}")
-        return input_path
+            face_helper.add_restored_face(restored_face, cropped_face)
 
-    def enhance(self, img_path: str, output_path: str):
-        """
-        Runs the Hybrid Pipeline:
-        1. CodeFormer (Face Restoration)
-        2. Real-ESRGAN (Background Upscaling)
-        """
-        
-        # Step 1: Face Restoration
-        # This returns the path to the face-fixed image (or original if failed)
-        restored_path = self.run_codeformer(img_path)
-        
-        # Read the result
-        img = cv2.imread(restored_path, cv2.IMREAD_COLOR)
-        if img is None:
-            # Fallback if OpenCV fails to read the CodeFormer output
-            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        # Paste faces back
+        face_helper.get_inverse_affine(None)
+        restored_img = face_helper.paste_faces_to_input_image()
 
-        print("⚡ Starting Background Upscaling (Real-ESRGAN)...")
-        
-        # Step 2: Global Upscaling
-        # output is the raw numpy array image
-        output, _ = self.upsampler.enhance(img, outscale=2)
+        # Step 2: Background Upscaling
+        print("⚡ Upscaling Background...")
+        output, _ = self.upsampler.enhance(restored_img, outscale=2)
 
-        # Save final result
+        # Save
         cv2.imwrite(output_path, output)
         return output_path
+
+    def _get_face_helper(self, img):
+        # Helper to instantiate FaceHelper cleanly
+        from facexlib.utils.face_restoration_helper import FaceRestorationHelper
+        face_helper = FaceRestorationHelper(
+            1, face_size=512, crop_ratio=(1, 1), det_model='retinaface_resnet50', save_ext='png', use_parse=True, device=self.device
+        )
+        face_helper.clean_all()
+        face_helper.read_image(img)
+        face_helper.get_face_landmarks_5(only_center_face=False, resize=640, eye_dist_threshold=5)
+        face_helper.align_warp_face()
+        return face_helper

@@ -3,41 +3,49 @@ FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Install System Dependencies
+# 1. Install System Dependencies (Fixes libGL.so.1 Error)
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
-    libgl1 \
+    libgl1-mesa-glx \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    ffmpeg \
     git \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 1. Setup CodeFormer
+# 2. Setup CodeFormer in a separate system folder
+WORKDIR /installations
 RUN git clone https://github.com/sczhou/CodeFormer.git CodeFormer
 
-# 2. Install Dependencies
-# --- FIX STARTS HERE ---
-# We must copy the requirements file BEFORE we try to install from it
-COPY requirements.txt . 
-# --- FIX ENDS HERE ---
+# 3. Install Dependencies
+WORKDIR /app
+COPY requirements.txt .
 
-RUN pip3 install --no-cache-dir -r CodeFormer/requirements.txt
+# Install CodeFormer requirements first
+RUN pip3 install --no-cache-dir -r /installations/CodeFormer/requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 RUN pip3 uninstall -y basicsr
 
-# 3. Copy Your Patched Code
+# 4. Copy Application Code
 COPY basicsr /app/basicsr
 COPY app /app/app
 COPY *.py /app/
 
-# 4. Link the Local Library
-ENV PYTHONPATH="${PYTHONPATH}:/app:/app/CodeFormer"
+# 5. FORCE-CREATE VERSION FILE (Fixes 'basicsr.version' syntax error)
+RUN echo "__version__ = '1.4.2'" > /app/basicsr/version.py && \
+    echo "__gitsha__ = 'unknown'" >> /app/basicsr/version.py
 
-# 5. Download Weights
-WORKDIR /app/CodeFormer
+# 6. Set Environment Paths
+ENV PYTHONPATH="${PYTHONPATH}:/app:/installations/CodeFormer"
+
+# 7. Download Weights
+WORKDIR /installations/CodeFormer
 RUN python3 scripts/download_pretrained_models.py CodeFormer
 RUN python3 scripts/download_pretrained_models.py facelib
 
