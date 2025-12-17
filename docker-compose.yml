@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   enhancer-api:
     build: .
@@ -13,12 +11,17 @@ services:
       - GCS_BUCKET_ENHANCED=photo_enhance
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
     volumes:
-      # Map the credentials file from host to container
+      # 1. Map the credentials file (Client Readiness)
       - ./credentials.json:/app/credentials.json
-    #deploy:
-     # resources:
-       # reservations:
-          #devices:
-           # - driver: nvidia
-             # count: 1
-              #capabilities: [gpu]
+      # 2. Map the uploads folder (Crucial for Local Testing)
+      # This makes the AI save images directly to your computer folder
+      - ./temp_uploads:/app/temp_uploads
+      
+    # Uncomment below if deploying on a machine with NVIDIA GPUs
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
